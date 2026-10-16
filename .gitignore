@@ -1,0 +1,10 @@
+# 비밀 키 (절대 커밋 금지)
+.env
+
+# 가상환경 / 캐시
+.venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

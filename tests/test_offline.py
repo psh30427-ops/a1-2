@@ -16,7 +16,7 @@ from unittest import mock
 import requests
 
 import main
-from travel_recommender import gemini, kakao
+from travel_recommender import gemini, kakao, report
 
 FAKE_GEMINI_KEY = "FAKE-GEMINI-KEY-do-not-leak-1234"
 FAKE_KAKAO_KEY = "FAKE-KAKAO-KEY-do-not-leak-5678"
@@ -241,6 +241,41 @@ class UnitTest(unittest.TestCase):
     def test_parse_with_surrounding_text(self):
         text = "추천입니다:\n" + json.dumps(GOOD_REC, ensure_ascii=False) + "\n끝"
         self.assertEqual(gemini.parse_recommendation(text)["recommended_city"], "남양주시 조안면")
+
+
+class BasicReportTest(unittest.TestCase):
+    def places(self, *cats):
+        return [kakao.normalize(d) for d in kakao_docs(*cats).json()["documents"]]
+
+    def schedule(self, md):
+        return md.split("## 하루 일정", 1)[1]
+
+    def test_cafe_not_used_for_dinner(self):
+        # 두 번째 결과가 카페여도 저녁은 식사 장소(식당2)로
+        md = report.build_basic_report("2026-10-25", GOOD_REC, self.places(
+            "음식점 > 한식 > 국수", "음식점 > 카페", "음식점 > 중식"))
+        sched = self.schedule(md)
+        self.assertIn("**오후**: 식당0에서 점심 후 행사·즐길거리 참여, 식당1에서 커피·디저트로 휴식", sched)
+        self.assertIn("**저녁**: 식당2에서 저녁 식사 후 귀가", sched)
+        self.assertIn("### 식사", md)
+        self.assertIn("### 카페·디저트", md)
+
+    def test_bakery_counts_as_cafe(self):
+        self.assertTrue(kakao.is_cafe("음식점 > 간식 > 제과,베이커리"))
+        self.assertFalse(kakao.is_cafe("음식점 > 한식 > 냉면"))
+
+    def test_only_cafes(self):
+        md = report.build_basic_report("2026-10-25", GOOD_REC, self.places("음식점 > 카페"))
+        sched = self.schedule(md)
+        self.assertIn("**오후**: 점심 식사 후 행사·즐길거리 참여, 식당0에서 커피·디저트로 휴식", sched)
+        self.assertIn("**저녁**: 저녁 식사 후 귀가", sched)
+        self.assertIn("### 식사\n\n데이터 없음", md)
+
+    def test_single_meal_place_no_cafe(self):
+        md = report.build_basic_report("2026-10-25", GOOD_REC, self.places("음식점 > 한식"))
+        sched = self.schedule(md)
+        self.assertNotIn("휴식", sched)
+        self.assertNotIn("### 카페·디저트", md)
 
 
 if __name__ == "__main__":

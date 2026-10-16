@@ -5,7 +5,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from .kakao import is_cafe
+
 WEATHER_NOTE = "※ 실시간 예보가 아니라 해당 날짜(계절)의 일반적인 기후 경향입니다."
+
+
+def _place_line(r: Dict) -> str:
+    return "- [{}]({}) — {} / {}".format(r["name"], r["url"], r["category"], r["address"])
 
 
 def build_basic_report(date_str: str, recommendation: Dict, restaurants: List[Dict]) -> str:
@@ -32,25 +38,33 @@ def build_basic_report(date_str: str, recommendation: Dict, restaurants: List[Di
         "",
     ]
     lines += ["- {}".format(e) for e in recommendation.get("events", [])] or ["- 데이터 없음"]
+    meals = [r for r in restaurants if not is_cafe(r.get("category", ""))]
+    cafes = [r for r in restaurants if is_cafe(r.get("category", ""))]
+
     lines += ["", "## 맛집", ""]
     if restaurants:
-        for r in restaurants:
-            lines.append("- [{}]({}) — {} / {}".format(r["name"], r["url"], r["category"], r["address"]))
-        lines.append("")
-        lines.append("※ 평점 순이 아니라 카카오 검색 정확도 순입니다.")
+        lines += ["### 식사", ""]
+        lines += [_place_line(r) for r in meals] or ["데이터 없음"]
+        if cafes:
+            lines += ["", "### 카페·디저트", ""]
+            lines += [_place_line(r) for r in cafes]
+        lines += ["", "※ 평점 순이 아니라 카카오 검색 정확도 순입니다."]
     else:
         lines.append("데이터 없음")
-    first = restaurants[0]["name"] if restaurants else None
-    second = restaurants[1]["name"] if len(restaurants) > 1 else first
+
+    lunch = meals[0]["name"] if meals else None
+    dinner = meals[1]["name"] if len(meals) > 1 else lunch
+    cafe = cafes[0]["name"] if cafes else None
     lines += [
         "",
         "## 하루 일정",
         "",
         "- **오전**: {} 도착, 주변 산책과 명소 둘러보기".format(city),
-        "- **오후**: {}에서 점심 후 행사·즐길거리 참여".format(first) if first
-        else "- **오후**: 점심 식사 후 행사·즐길거리 참여",
-        "- **저녁**: {}에서 저녁 식사 후 귀가".format(second) if second
-        else "- **저녁**: 저녁 식사 후 귀가",
+        "- **오후**: {} 행사·즐길거리 참여{}".format(
+            "{}에서 점심 후".format(lunch) if lunch else "점심 식사 후",
+            ", {}에서 커피·디저트로 휴식".format(cafe) if cafe else ""),
+        "- **저녁**: {} 후 귀가".format(
+            "{}에서 저녁 식사".format(dinner) if dinner else "저녁 식사"),
         "",
     ]
     return "\n".join(lines)

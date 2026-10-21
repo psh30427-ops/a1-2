@@ -161,6 +161,20 @@ class MainFlowTest(unittest.TestCase):
         self.assertEqual(raw["recommendation"]["recommended_city"], "남양주시 조안면")
         self.assertEqual(raw["errors"][0]["stage"], "gemini_recommend")
 
+    def test_gemini_retry_prompt_adds_format_note(self):
+        code = self.run_main(
+            [gemini_text("이건 JSON 이 아닙니다"), gemini_text(json.dumps(GOOD_REC, ensure_ascii=False)),
+             gemini_text("# r")],
+            kakao_docs("음식점 > 한식"),
+        )
+        self.assertEqual(code, 0)
+        prompts = [c.kwargs["json"]["contents"][0]["parts"][0]["text"]
+                   for c in self.post.call_args_list[:2]]
+        self.assertNotIn(gemini.RETRY_NOTE, prompts[0])
+        self.assertTrue(prompts[1].endswith(gemini.RETRY_NOTE))
+        self.assertIn("직전 응답이 형식에 맞지 않았다", prompts[1])
+        self.assertEqual(prompts[1], prompts[0] + gemini.RETRY_NOTE)
+
     def test_gemini_validation_fail_twice_exits(self):
         bad = dict(GOOD_REC, recommended_city="서울시 강남구")
         code = self.run_main([gemini_text("not json"), gemini_text(json.dumps(bad, ensure_ascii=False))], None)

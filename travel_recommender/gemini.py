@@ -34,6 +34,12 @@ RECOMMEND_PROMPT = """너는 경기도 남양주시 여행 전문가야.
 - reason 은 2~4문장.
 """
 
+# 재시도(2번째 시도) 때 추천 프롬프트 뒤에 덧붙이는 문구
+RETRY_NOTE = """
+직전 응답이 형식에 맞지 않았다. 설명 없이 JSON 객체 하나만 출력하고
+필수 키 4개(recommended_city, weather, events, reason)를 모두 포함하라.
+"""
+
 REPORT_PROMPT = """아래 데이터만 사용해서 한국어 마크다운 여행 리포트를 작성해줘.
 데이터에 없는 맛집이나 사실을 지어내지 마.
 
@@ -143,8 +149,9 @@ def parse_recommendation(text: str) -> Dict:
 def get_recommendation(date_str: str, api_key: str, model: str,
                        errors: List[Dict], log=print) -> Optional[Dict]:
     """추천 요청. 파싱/검증 실패 시 1회 재시도. 최종 실패 시 None (errors 에 기록)."""
-    prompt = RECOMMEND_PROMPT.format(date=date_str)
+    base_prompt = RECOMMEND_PROMPT.format(date=date_str)
     for attempt in (1, 2):
+        prompt = base_prompt if attempt == 1 else base_prompt + RETRY_NOTE
         log("[Gemini] 지역 추천 요청 (시도 {}/2, 모델 {})".format(attempt, model))
         try:
             text = call_gemini(prompt, api_key, model, json_mode=True)

@@ -34,6 +34,12 @@ RECOMMEND_PROMPT = """너는 경기도 남양주시 여행 전문가야.
 - reason 은 2~4문장.
 """
 
+# 재시도(2번째 시도) 때 추천 프롬프트 뒤에 덧붙이는 문구
+RETRY_NOTE = """
+직전 응답이 형식에 맞지 않았다. 설명 없이 JSON 객체 하나만 출력하고
+필수 키 4개(recommended_city, weather, events, reason)를 모두 포함하라.
+"""
+
 REPORT_PROMPT = """아래 데이터만 사용해서 한국어 마크다운 여행 리포트를 작성해줘.
 데이터에 없는 맛집이나 사실을 지어내지 마.
 
@@ -44,13 +50,17 @@ REPORT_PROMPT = """아래 데이터만 사용해서 한국어 마크다운 여�
 맛집 데이터(JSON, 카카오 검색 정확도 순, 평점 아님):
 {restaurants}
 
-리포트 구성 (이 순서의 ## 제목 사용):
-1. ## 추천 지역 — 지역 이름과 추천 이유
-2. ## 날씨 — 실시간 예보가 아닌 계절 경향임을 명시
+리포트 구성: 아래 ## 제목을 이 순서대로, 글자 그대로만 쓴다. 제목 뒤에 설명을 붙이지 마.
+1. ## 추천 지역
+   지역 이름과 추천 이유.
+2. ## 날씨
+   실시간 예보가 아닌 계절 경향임을 명시.
 3. ## 행사·즐길거리
-4. ## 맛집 — 이름, 분류, 주소, 링크. "### 식사"와 "### 카페·디저트"로 나눈다
+4. ## 맛집
+   이름, 분류, 주소, 링크. "### 식사"와 "### 카페·디저트" 소제목으로 나눈다
    (분류에 카페/디저트/제과/베이커리 등이 들어가면 카페·디저트). 맛집 데이터가 비어 있으면 "데이터 없음"이라고만 쓴다.
-5. ## 하루 일정 — 오전 / 오후 / 저녁 으로 나눠서 (맛집이 있으면 일정에 활용)
+5. ## 하루 일정
+   오전 / 오후 / 저녁으로 나눈다 (맛집이 있으면 일정에 활용).
    점심·저녁은 식사 장소로만 잡고, 카페·디저트는 식사 장소로 쓰지 말고 오후 휴식 시간에만 넣는다.
 
 마크다운 본문만 출력해.
@@ -139,8 +149,9 @@ def parse_recommendation(text: str) -> Dict:
 def get_recommendation(date_str: str, api_key: str, model: str,
                        errors: List[Dict], log=print) -> Optional[Dict]:
     """추천 요청. 파싱/검증 실패 시 1회 재시도. 최종 실패 시 None (errors 에 기록)."""
-    prompt = RECOMMEND_PROMPT.format(date=date_str)
+    base_prompt = RECOMMEND_PROMPT.format(date=date_str)
     for attempt in (1, 2):
+        prompt = base_prompt if attempt == 1 else base_prompt + RETRY_NOTE
         log("[Gemini] 지역 추천 요청 (시도 {}/2, 모델 {})".format(attempt, model))
         try:
             text = call_gemini(prompt, api_key, model, json_mode=True)

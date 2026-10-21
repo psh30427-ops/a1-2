@@ -1,0 +1,11 @@
+{
+  "date": "2026-10-25",
+  "recommendation": null,
+  "restaurants": [],
+  "errors": [
+    {
+      "stage": "gemini_recommend",
+      "message": "Gemini ReadTimeout"
+    }
+  ]
+}

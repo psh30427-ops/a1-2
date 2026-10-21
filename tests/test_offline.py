@@ -243,6 +243,26 @@ class UnitTest(unittest.TestCase):
         cats = [p["category"] for p in picked]
         self.assertEqual(len(set(cats)), 5)
 
+    def test_custom_place_searcher(self):
+        class FakeSearcher:
+            def __init__(self):
+                self.calls = []
+
+            def search(self, query, api_key):
+                self.calls.append((query, api_key))
+                return [{"name": "가", "address": "주소", "category": "음식점 > 한식", "url": "u",
+                         "lat": 0.0, "lng": 0.0}]
+
+        searcher = FakeSearcher()
+        errors = []
+        with mock.patch("requests.get") as get:
+            picked = kakao.find_restaurants("남양주시 조안면", "k", errors, log=lambda m: None,
+                                            searcher=searcher)
+        get.assert_not_called()  # 카카오 API 를 부르지 않음
+        self.assertEqual(searcher.calls, [("남양주 조안면 맛집", "k")])
+        self.assertEqual([p["name"] for p in picked], ["가"])
+        self.assertEqual(errors, [])
+
     def test_query_building(self):
         self.assertEqual(kakao.build_query("남양주시 화도읍"), "남양주 화도읍 맛집")
         self.assertEqual(kakao.build_query("남양주시"), "남양주 맛집")

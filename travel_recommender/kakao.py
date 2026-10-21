@@ -1,10 +1,11 @@
 """카카오 로컬 API 키워드 검색 (음식점 카테고리 FD6)."""
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import requests
 
 from .errors import ApiError, safe_exception_name
+from .places import PlaceSearcher
 
 KAKAO_KEYWORD_URL = "https://dapi.kakao.com/v2/local/search/keyword.json"
 SERVICE = "카카오 로컬"
@@ -60,6 +61,13 @@ def normalize(doc: Dict) -> Dict:
     }
 
 
+class KakaoPlaceSearcher:
+    """PlaceSearcher 의 카카오 로컬 구현."""
+
+    def search(self, query: str, api_key: str) -> List[Dict]:
+        return [normalize(d) for d in search_restaurants(query, api_key)]
+
+
 def _food_types(category: str):
     """'음식점 > 한식 > 육류,고기' -> ('한식', '육류,고기')."""
     parts = [p.strip() for p in category.split(">") if p.strip()]
@@ -108,20 +116,25 @@ def pick_diverse(places: List[Dict], limit: int = 5) -> List[Dict]:
     return chosen
 
 
-def find_restaurants(recommended_city: str, api_key: str, errors: List[Dict], log=print) -> List[Dict]:
-    """검색 → 정규화 → 다양성 선택. 실패/0건이어도 예외 없이 [] 반환하고 errors 에 기록."""
+def find_restaurants(recommended_city: str, api_key: str, errors: List[Dict], log=print,
+                     searcher: Optional[PlaceSearcher] = None) -> List[Dict]:
+    """검색 → 다양성 선택. 실패/0건이어도 예외 없이 [] 반환하고 errors 에 기록.
+
+    searcher 를 넘기지 않으면 카카오 로컬로 검색한다.
+    """
+    searcher = searcher or KakaoPlaceSearcher()
     query = build_query(recommended_city)
     log("[카카오] 맛집 검색: {}".format(query))
     try:
-        docs = search_restaurants(query, api_key)
+        places = searcher.search(query, api_key)
     except ApiError as exc:
         errors.append({"stage": "kakao", "message": str(exc)})
         log("[카카오] 검색 실패: {} (맛집 없이 계속 진행)".format(exc))
         return []
-    if not docs:
+    if not places:
         errors.append({"stage": "kakao", "message": "검색 결과 0건 (query: {})".format(query)})
         log("[카카오] 검색 결과 0건 (맛집 없이 계속 진행)")
         return []
-    picked = pick_diverse([normalize(d) for d in docs])
-    log("[카카오] {}건 중 {}곳 선택".format(len(docs), len(picked)))
+    picked = pick_diverse(places)
+    log("[카카오] {}건 중 {}곳 선택".format(len(places), len(picked)))
     return picked

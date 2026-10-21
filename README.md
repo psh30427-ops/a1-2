@@ -14,6 +14,10 @@
 3. **Gemini**가 최종 리포트(추천 지역·이유, 날씨, 행사, 맛집, 오전/오후/저녁 일정)를 작성합니다.
    - 이 단계가 실패하면 가진 데이터로 **기본 리포트**를 대신 저장합니다. 맛집이 없으면 "데이터 없음"으로 표시됩니다.
 
+### 지도 검색 바꾸기
+
+맛집 검색은 `travel_recommender/places.py`의 `PlaceSearcher` 인터페이스를 거칩니다. `search(query, api_key)`가 `name`, `address`, `category`, `url`, `lat`, `lng` 키를 가진 dict 목록을 돌려주고, 실패하면 `ApiError`를 던지면 됩니다. 지금은 카카오 구현(`kakao.KakaoPlaceSearcher`)이 연결되어 있습니다. **네이버 등으로 바꾸려면 이 인터페이스에 맞는 구현을 추가**하고 `kakao.find_restaurants(..., searcher=새구현())`으로 넘기면 됩니다. 검색어 만들기, 음식 종류 중복 제거, 실패·0건 처리는 그대로 재사용됩니다.
+
 ## GET과 POST 선택 근거
 
 - **카카오 키워드 검색 → GET**: 서버의 데이터를 바꾸지 않고 조회만 합니다. 검색어(`query`)와 `category_group_code`, `size`처럼 짧은 값은 쿼리 파라미터로 보내면 충분합니다.

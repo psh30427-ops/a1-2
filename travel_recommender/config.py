@@ -6,7 +6,7 @@ from typing import Dict, List
 from dotenv import load_dotenv
 
 REQUIRED_KEYS = ("GEMINI_API_KEY", "KAKAO_REST_API_KEY")
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 
 def load_keys() -> Dict[str, str]:

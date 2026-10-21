@@ -33,10 +33,10 @@ python3 -m venv .venv
 
 ### Gemini 모델 바꾸기
 
-기본 모델은 `gemini-2.5-flash`이며 환경변수 `GEMINI_MODEL`로 바꿀 수 있습니다.
+기본 모델은 `gemini-3.5-flash-lite`이며 환경변수 `GEMINI_MODEL`로 바꿀 수 있습니다.
 
 ```bash
-GEMINI_MODEL=gemini-2.5-pro .venv/bin/python main.py -date "2026-10-20"
+GEMINI_MODEL=gemini-3.5-flash .venv/bin/python main.py -date "2026-10-20"
 ```
 
 > **HTTP 404가 나오면 `GEMINI_MODEL`을 바꿔보세요.** 모델 이름이 바뀌었거나 더 이상 제공되지 않는 경우입니다.

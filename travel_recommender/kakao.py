@@ -70,6 +70,14 @@ def _food_types(category: str):
     return broad, detail
 
 
+CAFE_KEYWORDS = ("카페", "커피", "디저트", "제과", "베이커리", "간식", "아이스크림", "떡,한과")
+
+
+def is_cafe(category: str) -> bool:
+    """카페·디저트류(식사 장소로 부적절)인지 카테고리 문자열로 판단."""
+    return any(k in category for k in CAFE_KEYWORDS)
+
+
 def pick_diverse(places: List[Dict], limit: int = 5) -> List[Dict]:
     """음식 종류가 겹치지 않게 최대 limit 개 선택 (검색 정확도 순서 유지).
 

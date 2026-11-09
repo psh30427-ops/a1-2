@@ -1,5 +1,6 @@
 """카카오 로컬 API 키워드 검색 (음식점 카테고리 FD6)."""
 
+import re
 from typing import Dict, List
 
 import requests
@@ -21,13 +22,15 @@ def build_query(recommended_city: str) -> str:
     return "남양주 {} 맛집".format(area) if area else "남양주 맛집"
 
 
-def search_restaurants(query: str, api_key: str, size: int = 15) -> List[Dict]:
+def search_restaurants(query: str, api_key: str, size: int = 15,
+                       category: str = "FD6") -> List[Dict]:
     """카카오 키워드 검색 원본 documents 목록을 반환. 실패 시 ApiError."""
     try:
         resp = requests.get(
             KAKAO_KEYWORD_URL,
             headers={"Authorization": "KakaoAK {}".format(api_key)},
-            params={"query": query, "category_group_code": "FD6", "size": size},
+            params=dict({"query": query, "size": size},
+                        **({"category_group_code": category} if category else {})),
             timeout=TIMEOUT,
         )
     except requests.RequestException as exc:
@@ -37,9 +40,70 @@ def search_restaurants(query: str, api_key: str, size: int = 15) -> List[Dict]:
         raise ApiError(SERVICE, status=resp.status_code)
     try:
         documents = resp.json().get("documents", [])
-    except ValueError:
+    except (ValueError, AttributeError):
         raise ApiError(SERVICE, kind="응답 JSON 파싱 실패")
     return documents if isinstance(documents, list) else []
+
+
+def address_in_area(address: str, city: str) -> bool:
+    """주소의 행정구역 토큰을 비교한다. 불명확한 주소는 허용하지 않는다."""
+    if not isinstance(address, str) or not re.fullmatch(r"남양주시 [가-힣]+[읍면동]", city):
+        return False
+    parts = address.split()
+    if parts and parts[0] in ("경기", "경기도"):
+        parts = parts[1:]
+    return len(parts) >= 2 and parts[:2] == city.split()
+
+
+def local_document(doc: Dict, city: str) -> bool:
+    # 도로명 주소에 동이 없으면 지번 주소를 사용한다. 두 주소가 충돌하면 제외한다.
+    addresses = [doc.get(key) for key in ("road_address_name", "address_name")
+                 if doc.get(key)]
+    if not any(address_in_area(a, city) for a in addresses):
+        return False
+    for address in addresses:
+        tokens = address.split()
+        if tokens and tokens[0] in ("경기", "경기도"):
+            tokens = tokens[1:]
+        if not tokens or tokens[0] != "남양주시":
+            return False
+        if len(tokens) > 1 and re.fullmatch(r"[가-힣]+[읍면동]", tokens[1]):
+            if tokens[1] != city.split()[1]:
+                return False
+    return True
+
+
+def verify_recommendation(recommendation: Dict, api_key: str,
+                          errors: List[Dict], log=print) -> Dict:
+    """장소명이 일치하고 선택 지역의 주소가 확인된 장소만 남긴다."""
+    city = recommendation["recommended_city"]
+    places = []
+    seen = set()
+    for candidate in recommendation.get("events", []):
+        try:
+            docs = search_restaurants(candidate, api_key, category="")
+        except ApiError as exc:
+            errors.append({"stage": "place_verification", "message": str(exc)})
+            continue
+        name_key = re.sub(r"\s+", "", candidate)
+        matches = [d for d in docs if isinstance(d, dict)
+                   and re.sub(r"\s+", "", d.get("place_name", "")) == name_key]
+        # 동명 장소가 여러 곳이면 임의로 선택하지 않는다.
+        if len(matches) == 1 and local_document(matches[0], city):
+            place = normalize(matches[0])
+            if place["name"] not in seen:
+                places.append(place)
+                seen.add(place["name"])
+        else:
+            errors.append({"stage": "place_verification",
+                           "message": "장소 제외: 지역 밖 또는 이름·주소 확인 불가"})
+    result = dict(recommendation)
+    result["verified_places"] = places
+    result["events"] = [p["name"] for p in places]
+    # 모델의 설명에 검증되지 않은 장소가 남아 재등장하지 않도록 한다.
+    result["reason"] = "선택 지역 안에서 주소가 확인된 장소와 식당만 안내합니다."
+    log("[장소 검증] {}곳 확인".format(len(places)))
+    return result
 
 
 def _to_float(value) -> float:
@@ -122,6 +186,9 @@ def find_restaurants(recommended_city: str, api_key: str, errors: List[Dict], lo
         errors.append({"stage": "kakao", "message": "검색 결과 0건 (query: {})".format(query)})
         log("[카카오] 검색 결과 0건 (맛집 없이 계속 진행)")
         return []
-    picked = pick_diverse([normalize(d) for d in docs])
+    local = [d for d in docs if isinstance(d, dict) and local_document(d, recommended_city)]
+    if len(local) != len(docs):
+        errors.append({"stage": "kakao", "message": "지역 밖 또는 주소 확인 불가 식당 {}곳 제외".format(len(docs) - len(local))})
+    picked = pick_diverse([normalize(d) for d in local])
     log("[카카오] {}건 중 {}곳 선택".format(len(docs), len(picked)))
     return picked

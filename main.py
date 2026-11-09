@@ -4,22 +4,21 @@
 """
 
 import argparse
-import re
 import sys
+import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from travel_recommender import config, gemini, kakao, report
-from travel_recommender.errors import ApiError
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
 
 def parse_date(value: str) -> date:
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+        raise argparse.ArgumentTypeError("날짜 형식은 YYYY-MM-DD 여야 합니다")
     try:
-        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
-            raise ValueError
         return datetime.strptime(value, "%Y-%m-%d").date()
     except ValueError:
         raise argparse.ArgumentTypeError("날짜 형식은 YYYY-MM-DD 여야 합니다: {!r}".format(value))
@@ -57,26 +56,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     recommendation = gemini.get_recommendation(date_str, keys["GEMINI_API_KEY"], model, errors, log=log)
     if recommendation is None:
         raw_path, _ = report.save_results(RESULTS_DIR, date_str, None, [], errors, None)
-        log("[실패] 지역 추천을 받지 못해 종료합니다. 위 오류 안내를 확인하세요.")
+        log("[실패] 지역 추천을 받지 못해 종료합니다. (HTTP 404 라면 GEMINI_MODEL 을 바꿔보세요)")
         log("[저장] raw JSON: {}".format(raw_path))
         return 1
 
+    # 원본 생성 문구는 검증된 장소를 우회해 노출하지 않는다.
     recommendation = kakao.verify_recommendation(
-        recommendation, keys["KAKAO_REST_API_KEY"], errors, log=log)
-
-    # 2) 카카오 맛집 검색 (실패해도 계속)
+        recommendation, keys["KAKAO_REST_API_KEY"], errors)
     restaurants = kakao.find_restaurants(
         recommendation["recommended_city"], keys["KAKAO_REST_API_KEY"], errors, log=log)
-
-    # 3) Gemini 최종 리포트 (실패 시 기본 리포트)
-    log("[리포트] 주소가 확인된 장소로 일정 작성")
-    try:
-        report_md = gemini.write_report(date_str, recommendation, restaurants,
-                                        keys["GEMINI_API_KEY"], model)
-    except ApiError as exc:
-        errors.append({"stage": "gemini_report", "message": str(exc)})
-        log("[Gemini] 리포트 생성 실패: {} → 기본 리포트로 대체".format(exc))
-        report_md = report.build_basic_report(date_str, recommendation, restaurants)
+    report_md = report.build_basic_report(date_str, recommendation, restaurants)
 
     raw_path, report_path = report.save_results(
         RESULTS_DIR, date_str, recommendation, restaurants, errors, report_md)

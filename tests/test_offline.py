@@ -160,7 +160,7 @@ class MainFlowTest(unittest.TestCase):
             kakao_docs("음식점 > 한식"),
         )
         self.assertEqual(code, 0)
-        self.assertEqual(self.post.call_count, 3)
+        self.assertEqual(self.post.call_count, 2)  # 리포트는 검증된 데이터로 직접 구성
         raw = self.load_raw()
         self.assertEqual(raw["recommendation"]["recommended_city"], "남양주시 조안면")
         self.assertEqual(raw["errors"][0]["stage"], "gemini_recommend")

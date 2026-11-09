@@ -3,8 +3,6 @@
 import json
 import re
 import time
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 from typing import Dict, List, Optional
 
 import requests
@@ -33,8 +31,7 @@ RECOMMEND_PROMPT = """너는 경기도 남양주시 여행 전문가야.
 
 규칙:
 - recommended_city 는 반드시 "남양주시"로 시작하고 뒤에 읍/면/동 이름 하나를 붙인다.
-- events 는 선택한 읍/면/동 안에 있는 실제 방문 장소의 정확한 이름 1~3개 리스트.
-  카카오 장소 검색으로 주소를 확인할 것이므로 활동 설명, 축제 일정, 괄호나 수식어는 넣지 않는다.
+- events 는 방문할 장소의 정확한 상호명/명칭만 1~3개 적는다. 산책/관람 등의 활동 설명이나 미확인 축제는 쓰지 않는다.
 - reason 은 2~4문장.
 """
 
@@ -71,33 +68,19 @@ def call_gemini(prompt: str, api_key: str, model: str, json_mode: bool = False) 
             resp = requests.post(
                 GEMINI_URL_TEMPLATE.format(model=model),
                 headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                json=body,
-                timeout=TIMEOUT,
+                json=body, timeout=TIMEOUT,
             )
+        except requests.Timeout as exc:
+            if attempt == 2:
+                raise ApiError(SERVICE, kind=safe_exception_name(exc))
         except requests.RequestException as exc:
-            retryable = isinstance(exc, (requests.Timeout, requests.ConnectionError)) and not isinstance(exc, requests.exceptions.SSLError)
-            if not retryable or attempt == 2:
-                raise ApiError(SERVICE, kind=safe_exception_name(exc)) from None
-            time.sleep(2 ** attempt)
-            continue
-        if resp.status_code == 200:
-            break
-        if resp.status_code not in (429, 500, 502, 503, 504) or attempt == 2:
-            raise ApiError(SERVICE, status=resp.status_code)
-        delay = 2 ** attempt
-        retry_after = getattr(resp, "headers", {}).get("Retry-After", "")
-        try:
-            if retry_after.isdigit():
-                delay = max(delay, int(retry_after))
-            elif retry_after:
-                until = parsedate_to_datetime(retry_after)
-                delay = max(delay, (until - datetime.now(timezone.utc)).total_seconds())
-        except (ValueError, TypeError, OverflowError):
-            pass
-        # 긴 서버 대기 요구는 조기 재호출하지 않고 호출자에게 반환한다.
-        if delay > 60:
-            raise ApiError(SERVICE, status=resp.status_code, kind="긴 대기 필요")
-        time.sleep(delay)
+            raise ApiError(SERVICE, kind=safe_exception_name(exc))
+        else:
+            if resp.status_code == 200:
+                break
+            if resp.status_code not in {429, 500, 502, 503, 504} or attempt == 2:
+                raise ApiError(SERVICE, status=resp.status_code)
+        time.sleep(2 ** attempt)
     try:
         data = resp.json()
         parts = data["candidates"][0]["content"]["parts"]
@@ -140,7 +123,7 @@ def parse_recommendation(text: str) -> Dict:
         raise RecommendationError("JSON 객체가 아님")
 
     city = data.get("recommended_city")
-    if not isinstance(city, str) or not city.strip().startswith("남양주시"):
+    if not isinstance(city, str) or not re.fullmatch(r"남양주시 [가-힣]+[읍면동]", city.strip()):
         raise RecommendationError("recommended_city 가 '남양주시'로 시작하지 않음")
     weather = data.get("weather")
     if not isinstance(weather, str) or not weather.strip():
@@ -172,14 +155,6 @@ def get_recommendation(date_str: str, api_key: str, model: str,
         except ApiError as exc:
             errors.append({"stage": "gemini_recommend", "message": str(exc)})
             log("[Gemini] 요청 실패: {}".format(exc))
-            if exc.status == 404:
-                log("[안내] GEMINI_MODEL 이름과 모델 접근 권한을 확인하세요.")
-            elif exc.status in (401, 403):
-                log("[안내] API 키와 프로젝트 접근 권한을 확인하세요.")
-            elif exc.status == 400:
-                log("[안내] 모델 이름과 요청 형식을 확인하세요.")
-            elif exc.status in (429, 500, 502, 503, 504) or exc.kind:
-                log("[안내] 일시 오류가 지속됩니다. 잠시 후 다시 시도하세요.")
             return None
         try:
             rec = parse_recommendation(text)
@@ -196,9 +171,6 @@ def get_recommendation(date_str: str, api_key: str, model: str,
 def write_report(date_str: str, recommendation: Dict, restaurants: List[Dict],
                  api_key: str, model: str) -> str:
     """최종 마크다운 리포트 생성. 실패 시 ApiError."""
-    if "verified_places" in recommendation:
-        from .report import build_basic_report
-        return build_basic_report(date_str, recommendation, restaurants)
     prompt = REPORT_PROMPT.format(
         date=date_str,
         recommendation=json.dumps(recommendation, ensure_ascii=False, indent=2),

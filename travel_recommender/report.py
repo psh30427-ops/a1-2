@@ -3,8 +3,8 @@
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
+from typing import Dict, List, Optional, Tuple
 
 from .kakao import is_cafe
 
@@ -16,20 +16,18 @@ def _place_line(r: Dict) -> str:
 
 
 def build_basic_report(date_str: str, recommendation: Dict, restaurants: List[Dict]) -> str:
-    """Gemini 리포트 생성 실패 시 가진 데이터만으로 만드는 리포트."""
+    """검증된 장소와 식당 목록으로 리포트와 일정을 구성한다."""
     city = recommendation.get("recommended_city", "")
     lines = [
         "# 남양주 하루 여행 리포트 ({})".format(date_str),
         "",
-        ("> 주소가 확인된 장소로 작성한 리포트입니다. 영업·행사 일정은 별도 확인이 필요합니다."
-         if "verified_places" in recommendation else
-         "> Gemini 리포트 생성에 실패하여 수집된 데이터로 만든 기본 리포트입니다."),
+        "> 카카오에서 장소와 주소가 검증된 데이터로 만든 기본 리포트입니다.",
         "",
         "## 추천 지역",
         "",
         "**{}**".format(city),
         "",
-        recommendation.get("reason", ""),
+        "카카오 주소로 확인된 장소만 안내합니다.",
         "",
         "## 날씨",
         "",
@@ -40,11 +38,7 @@ def build_basic_report(date_str: str, recommendation: Dict, restaurants: List[Di
         "## 행사·즐길거리",
         "",
     ]
-    verified = recommendation.get("verified_places")
-    if verified is not None:
-        lines += [_place_line(p) for p in verified] or ["- 주소가 확인된 장소 없음"]
-    else:
-        lines += ["- {}".format(e) for e in recommendation.get("events", [])] or ["- 데이터 없음"]
+    lines += [_place_line(p) for p in recommendation.get("places", [])] or ["- 데이터 없음"]
     meals = [r for r in restaurants if not is_cafe(r.get("category", ""))]
     cafes = [r for r in restaurants if is_cafe(r.get("category", ""))]
 
@@ -62,20 +56,17 @@ def build_basic_report(date_str: str, recommendation: Dict, restaurants: List[Di
     lunch = meals[0]["name"] if meals else None
     dinner = meals[1]["name"] if len(meals) > 1 else lunch
     cafe = cafes[0]["name"] if cafes else None
-    morning = "{} 도착, 주변 산책과 명소 둘러보기".format(city)
-    activity = "행사·즐길거리 참여"
-    if verified is not None:
-        morning = "{} 방문".format(verified[0]["name"]) if verified else "방문 장소 미정 (주소 확인 필요)"
-        activity = (" / ".join(p["name"] for p in verified[1:]) + " 방문"
-                    if len(verified) > 1 else "추가 방문 장소 미정")
+    attractions = recommendation.get("places", [])
+    morning = attractions[0]["name"] if attractions else "방문 일정 미정"
+    afternoon = ", ".join(p["name"] for p in attractions[1:]) or "자유시간"
+    lunch_plan = "{}에서 점심 식사 후".format(lunch) if lunch else "점심 식사 후"
+    lines += ["", "## 하루 일정", ""]
+    if not attractions:
+        lines += ["주소가 확인된 관광지가 없어 방문 일정은 미정입니다", ""]
     lines += [
-        "",
-        "## 하루 일정",
-        "",
         "- **오전**: {}".format(morning),
         "- **오후**: {} {}{}".format(
-            "{}에서 점심 후".format(lunch) if lunch else "점심 식사 후",
-            activity,
+            lunch_plan, afternoon,
             ", {}에서 커피·디저트로 휴식".format(cafe) if cafe else ""),
         "- **저녁**: {} 후 귀가".format(
             "{}에서 저녁 식사".format(dinner) if dinner else "저녁 식사"),

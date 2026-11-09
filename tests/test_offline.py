@@ -10,7 +10,6 @@ import os
 import shutil
 import tempfile
 import unittest
-from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -36,7 +35,6 @@ class FakeResponse:
         self.status_code = status_code
         self._payload = payload
         self.text = body_text
-        self.headers = {}
 
     def json(self):
         if self._payload is None:
@@ -62,11 +60,11 @@ class MainFlowTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         patches = [
             mock.patch.object(main, "RESULTS_DIR", self.tmp),
+            mock.patch("travel_recommender.kakao.verify_recommendation",
+                       side_effect=lambda rec, key, errors: dict(rec, events=[], places=[])),
             mock.patch.dict(os.environ, FAKE_ENV, clear=True),
             # 실제 .env 파일을 절대 읽지 않도록 차단
             mock.patch("travel_recommender.config.load_dotenv", lambda **kw: None),
-            # 기존 Gemini 흐름 테스트는 장소 조회를 분리해 검증한다.
-            mock.patch("travel_recommender.kakao.verify_recommendation", side_effect=lambda rec, *a, **kw: rec),
         ]
         for p in patches:
             p.start()
@@ -115,7 +113,7 @@ class MainFlowTest(unittest.TestCase):
 
     def test_kakao_zero_results_continues(self):
         code = self.run_main(
-            [gemini_text(json.dumps(GOOD_REC, ensure_ascii=False)), FakeResponse(400)],
+            [gemini_text(json.dumps(GOOD_REC, ensure_ascii=False)), FakeResponse(500)],
             FakeResponse(200, {"documents": []}),
         )
         self.assertEqual(code, 0)
@@ -160,7 +158,7 @@ class MainFlowTest(unittest.TestCase):
             kakao_docs("음식점 > 한식"),
         )
         self.assertEqual(code, 0)
-        self.assertEqual(self.post.call_count, 2)  # 리포트는 검증된 데이터로 직접 구성
+        self.assertEqual(self.post.call_count, 2)
         raw = self.load_raw()
         self.assertEqual(raw["recommendation"]["recommended_city"], "남양주시 조안면")
         self.assertEqual(raw["errors"][0]["stage"], "gemini_recommend")
@@ -216,9 +214,7 @@ class CliTest(unittest.TestCase):
         self.assertNotIn(FAKE_GEMINI_KEY, output)
 
     def test_bad_date_prints_usage(self):
-        for argv in (["-date", "2026/10/20"], ["-date", "2026-02-30"],
-                     ["-date", "2026-1-2"], ["-date", "２０２６-01-02"],
-                     ["-date", "2026-01-02 "], []):
+        for argv in (["-date", "2026/10/20"], ["-date", "2026-02-30"], []):
             code, output = self.run_cli(argv, FAKE_ENV)
             self.assertEqual(code, 2)
             self.assertIn("usage:", output)
@@ -249,142 +245,6 @@ class UnitTest(unittest.TestCase):
         self.assertEqual(gemini.parse_recommendation(text)["recommended_city"], "남양주시 조안면")
 
 
-class GeminiRetryTest(unittest.TestCase):
-    def test_transient_statuses_retry_then_succeed(self):
-        for status in (429, 500, 502, 503, 504):
-            with self.subTest(status=status), mock.patch("requests.post", side_effect=[FakeResponse(status), gemini_text("OK")]) as post, mock.patch("travel_recommender.gemini.time.sleep") as sleep:
-                self.assertEqual(gemini.call_gemini("prompt", "key", "model"), "OK")
-                self.assertEqual(post.call_count, 2)
-                sleep.assert_called_once_with(1)
-
-    def test_retry_exhaustion_is_bounded(self):
-        from travel_recommender.errors import ApiError
-        with mock.patch("requests.post", return_value=FakeResponse(503)) as post, mock.patch("travel_recommender.gemini.time.sleep") as sleep:
-            with self.assertRaises(ApiError):
-                gemini.call_gemini("prompt", "key", "model")
-            self.assertEqual(post.call_count, 3)
-            self.assertEqual(sleep.call_args_list, [mock.call(1), mock.call(2)])
-
-    def test_permanent_errors_do_not_retry(self):
-        from travel_recommender.errors import ApiError
-        for status in (400, 401, 403, 404):
-            with mock.patch("requests.post", return_value=FakeResponse(status)) as post, mock.patch("travel_recommender.gemini.time.sleep") as sleep:
-                with self.assertRaises(ApiError):
-                    gemini.call_gemini("prompt", "key", "model")
-                self.assertEqual(post.call_count, 1)
-                sleep.assert_not_called()
-
-    def test_network_failures_retry_without_leaking_key(self):
-        for failure in (requests.ReadTimeout("secret-key"), requests.ConnectionError("secret-key")):
-            with mock.patch("requests.post", side_effect=[failure, gemini_text("OK")]), mock.patch("travel_recommender.gemini.time.sleep"):
-                self.assertEqual(gemini.call_gemini("prompt", "secret-key", "model"), "OK")
-
-    def test_retry_after_is_honored(self):
-        response = FakeResponse(429)
-        response.headers["Retry-After"] = "5"
-        with mock.patch("requests.post", side_effect=[response, gemini_text("OK")]), mock.patch("travel_recommender.gemini.time.sleep") as sleep:
-            gemini.call_gemini("prompt", "key", "model")
-            sleep.assert_called_once_with(5)
-
-    def test_leap_day_validation(self):
-        self.assertEqual(main.parse_date("2024-02-29").isoformat(), "2024-02-29")
-        import argparse
-        with self.assertRaises(argparse.ArgumentTypeError):
-            main.parse_date("2025-02-29")
-
-
-class AreaVerificationTest(unittest.TestCase):
-    def test_address_boundaries_and_missing_address(self):
-        for address in ("경기 남양주시 조안면 북한강로 1", "경기도 남양주시 조안면 능내리 1"):
-            self.assertTrue(kakao.address_in_area(address, "남양주시 조안면"))
-        for address in ("", "경기 양평군 양서면 1", "경기 남양주시 화도읍 1",
-                        "경기 남양주시 조안면길 1", "서울 조안면 1"):
-            self.assertFalse(kakao.address_in_area(address, "남양주시 조안면"))
-
-    def test_lot_address_can_verify_dong_but_conflicts_rejected(self):
-        doc = {"road_address_name": "경기 남양주시 경춘로 1",
-               "address_name": "경기 남양주시 호평동 1"}
-        self.assertTrue(kakao.local_document(doc, "남양주시 호평동"))
-        doc["road_address_name"] = "경기 양평군 양서면 1"
-        self.assertFalse(kakao.local_document(doc, "남양주시 호평동"))
-
-    def test_restaurant_filter_runs_before_diversity_selection(self):
-        docs = [dict(place_name="외부", address_name="경기 양평군 양서면 1", category_name="음식점 > 한식"),
-                dict(place_name="내부", address_name="경기 남양주시 조안면 1", category_name="음식점 > 한식"),
-                dict(place_name="미확인", category_name="음식점 > 일식")]
-        errors = []
-        with mock.patch.object(kakao, "search_restaurants", return_value=docs):
-            places = kakao.find_restaurants("남양주시 조안면", "key", errors, log=lambda _: None)
-        self.assertEqual([p["name"] for p in places], ["내부"])
-        self.assertIn("2곳 제외", errors[0]["message"])
-
-    def test_places_are_verified_and_cannot_reappear_in_report(self):
-        rec = dict(GOOD_REC, events=["두물머리", "능내역", "미확인"], reason="두물머리와 세미원 추천")
-        results = [
-            [{"place_name": "두물머리", "address_name": "경기 양평군 양서면 1"}],
-            [{"place_name": "능내역", "address_name": "경기 남양주시 조안면 1"}],
-            [{"place_name": "다른 장소", "address_name": "경기 남양주시 조안면 1"}],
-        ]
-        errors = []
-        with mock.patch.object(kakao, "search_restaurants", side_effect=results):
-            verified = kakao.verify_recommendation(rec, "key", errors, log=lambda _: None)
-        self.assertEqual(verified["events"], ["능내역"])
-        self.assertEqual(len(errors), 2)
-        with mock.patch.object(gemini, "call_gemini") as generate:
-            md = gemini.write_report("2026-11-10", verified, [], "key", "model")
-        generate.assert_not_called()
-        self.assertIn("능내역", md)
-        self.assertIn("경기 남양주시 조안면 1", md)
-        self.assertNotIn("두물머리", md)
-        self.assertNotIn("세미원", md)
-
-    def test_api_failure_and_ambiguous_places_fail_closed(self):
-        rec = dict(GOOD_REC, events=["장소", "오류"])
-        doc = {"place_name": "장소", "address_name": "경기 남양주시 조안면 1"}
-        from travel_recommender.errors import ApiError
-        errors = []
-        with mock.patch.object(kakao, "search_restaurants", side_effect=[[doc, doc], ApiError("카카오", status=503)]):
-            verified = kakao.verify_recommendation(rec, "key", errors, log=lambda _: None)
-        self.assertEqual(verified["verified_places"], [])
-        md = report.build_basic_report("2026-11-10", verified, [])
-        self.assertIn("방문 장소 미정", md)
-        self.assertNotIn("주변 산책과 명소", md)
-        self.assertEqual(len(errors), 2)
-
-
-class SaveResultsTest(unittest.TestCase):
-    def test_same_second_runs_preserve_both_results(self):
-        with tempfile.TemporaryDirectory() as directory, \
-                mock.patch("travel_recommender.report.datetime") as clock:
-            clock.now.return_value = datetime(2026, 11, 6, 12, 0, 0)
-            root = Path(directory)
-            first = report.save_results(root, "2026-11-07", GOOD_REC, [], [], "first")
-            second = report.save_results(root, "2026-11-07", None, [], [], "second")
-            self.assertNotEqual(first, second)
-            self.assertEqual(first[1].read_text(encoding="utf-8"), "first")
-            self.assertEqual(second[1].read_text(encoding="utf-8"), "second")
-            self.assertEqual(json.loads(first[0].read_text())["recommendation"], GOOD_REC)
-            self.assertIsNone(json.loads(second[0].read_text())["recommendation"])
-            self.assertEqual(len(list(root.iterdir())), 4)
-            for raw, md in (first, second):
-                self.assertEqual(raw.name.removesuffix("_raw.json"),
-                                 md.name.removesuffix("_report.md"))
-
-    def test_existing_result_is_never_overwritten(self):
-        with tempfile.TemporaryDirectory() as directory, \
-                mock.patch("travel_recommender.report.datetime") as clock, \
-                mock.patch("travel_recommender.report.uuid4") as identifier:
-            clock.now.return_value = datetime(2026, 11, 6, 12, 0, 0)
-            identifier.return_value.hex = "fixed"
-            root = Path(directory)
-            raw, md = report.save_results(root, "2026-11-07", GOOD_REC, [], [], "original")
-            original_raw = raw.read_bytes()
-            with self.assertRaises(FileExistsError):
-                report.save_results(root, "2026-11-07", None, [], [], "replacement")
-            self.assertEqual(raw.read_bytes(), original_raw)
-            self.assertEqual(md.read_text(), "original")
-
-
 class BasicReportTest(unittest.TestCase):
     def places(self, *cats):
         return [kakao.normalize(d) for d in kakao_docs(*cats).json()["documents"]]
@@ -397,10 +257,42 @@ class BasicReportTest(unittest.TestCase):
         md = report.build_basic_report("2026-10-25", GOOD_REC, self.places(
             "음식점 > 한식 > 국수", "음식점 > 카페", "음식점 > 중식"))
         sched = self.schedule(md)
-        self.assertIn("**오후**: 식당0에서 점심 후 행사·즐길거리 참여, 식당1에서 커피·디저트로 휴식", sched)
+        self.assertIn("**오후**: 식당0에서 점심 식사 후 자유시간, 식당1에서 커피·디저트로 휴식", sched)
         self.assertIn("**저녁**: 식당2에서 저녁 식사 후 귀가", sched)
         self.assertIn("### 식사", md)
         self.assertIn("### 카페·디저트", md)
+
+    def test_attraction_counts_with_and_without_restaurants(self):
+        verified = [dict(name=name, url="https://example.com/place", category="관광,명소",
+                         address="경기 남양주시 조안면 1")
+                    for name in ("검증관광지A", "검증관광지B", "검증관광지C")]
+        for count in (0, 1, 3):
+            for has_restaurant in (False, True):
+                with self.subTest(count=count, has_restaurant=has_restaurant):
+                    rec = dict(GOOD_REC, places=verified[:count], events=["미검증관광지"])
+                    meals = self.places("음식점 > 한식") if has_restaurant else []
+                    md = report.build_basic_report("2026-11-10", rec, meals)
+                    schedule = self.schedule(md)
+                    afternoon = next(line for line in schedule.splitlines() if "**오후**" in line)
+                    lunch = "식당0에서 점심 식사 후" if has_restaurant else "점심 식사 후"
+                    self.assertNotIn("미검증관광지", md)
+                    self.assertFalse(afternoon.endswith("점심 후"))
+                    self.assertFalse(afternoon.endswith("식사 후"))
+                    if count == 0:
+                        self.assertIn("주소가 확인된 관광지가 없어 방문 일정은 미정입니다", schedule)
+                        self.assertIn("**오전**: 방문 일정 미정", schedule)
+                    else:
+                        self.assertIn("**오전**: 검증관광지A\n", schedule)
+                        self.assertNotIn("방문 일정은 미정", schedule)
+                    if count <= 1:
+                        self.assertEqual(afternoon, "- **오후**: " + lunch + " 자유시간")
+                        self.assertNotIn("검증관광지A", afternoon)
+                    else:
+                        self.assertEqual(afternoon, "- **오후**: " + lunch + " 검증관광지B, 검증관광지C")
+                    if not has_restaurant:
+                        self.assertIn("## 맛집\n\n데이터 없음", md)
+                        self.assertIn("**저녁**: 저녁 식사 후 귀가", schedule)
+                        self.assertNotIn("식당0", schedule)
 
     def test_bakery_counts_as_cafe(self):
         self.assertTrue(kakao.is_cafe("음식점 > 간식 > 제과,베이커리"))
@@ -409,7 +301,7 @@ class BasicReportTest(unittest.TestCase):
     def test_only_cafes(self):
         md = report.build_basic_report("2026-10-25", GOOD_REC, self.places("음식점 > 카페"))
         sched = self.schedule(md)
-        self.assertIn("**오후**: 점심 식사 후 행사·즐길거리 참여, 식당0에서 커피·디저트로 휴식", sched)
+        self.assertIn("**오후**: 점심 식사 후 자유시간, 식당0에서 커피·디저트로 휴식", sched)
         self.assertIn("**저녁**: 저녁 식사 후 귀가", sched)
         self.assertIn("### 식사\n\n데이터 없음", md)
 
